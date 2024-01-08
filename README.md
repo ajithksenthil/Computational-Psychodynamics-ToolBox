@@ -17,15 +17,24 @@ Applications
 This framework has a wide range of applications in psychological research and practice, including:
 
 Stationary Distribution: Analyzing long-term behavioral tendencies.
+
 Clustering or Grouping: Segmenting populations based on shared behavioral dynamics.
+
 Behavioral Sequence Analysis: Tracking the progression of behaviors over time.
+
 Simulation: Projecting potential future behavioral patterns.
+
 Comparative Analysis: Evaluating the impact of different interventions or demographic factors.
+
 Absorption Probabilities: Identifying transition likelihoods to critical behavioral states.
+
 Transient and Recurrent States: Distinguishing between stable and momentary behaviors.
+
 Entropy Rate: Measuring the unpredictability of behavioral transitions.
+
 Mean First Passage Time: Estimating the time or steps required for specific behavioral transitions.
-Repository Structure
+
+## Repository Structure
 
 /src: Source code for data collection, annotation, and analysis.
 /docs: Detailed documentation and methodology.
