@@ -10,7 +10,7 @@ import requests
 import ast
 import re
 
-OPENAI_API_KEY = "your openai key"
+OPENAI_API_KEY = "your open ai key"
 client = OpenAI(api_key = OPENAI_API_KEY)
 # OpenAI.api_key = os.getenv('OPENAI_API_KEY')
 def extract_frames(video_path, interval=1):
@@ -117,8 +117,46 @@ def gpt_parse_events(descriptions):
     response_message = response.choices[0].message.content if response.choices else ""
     return process_gpt_responses(response_message)
 
-# Rest of your code remains the same
 
+# extracts the list from the string
+#def extract_list_from_string(description):
+    """
+    Extracts the Python list of dictionaries from the string.
+    """
+    # Regular expression to find the list part in the string
+    list_regex = r"\[\s*\{.*?\}\s*\]"  # Adjust this regex as needed
+
+    # Searching for the list in the string
+    match = re.search(list_regex, description, re.DOTALL)
+    if match:
+        list_str = match.group(0)
+        try:
+            # Safely evaluate the string to a Python list
+            return ast.literal_eval(list_str)
+        except (ValueError, SyntaxError) as e:
+            print(f"Error evaluating the list: {e}")
+    else:
+        print("No list found in the string.")
+
+    return []
+
+def extract_list_from_string(description):
+    """
+    Extracts the Python list of dictionaries from the string.
+    Assumes the list is the last part of the string.
+    """
+    try:
+        # Find the starting index of the list
+        start_index = description.index("[")
+        # Find the ending index of the list
+        end_index = description.rindex("]") + 1
+
+        list_str = description[start_index:end_index]
+        return ast.literal_eval(list_str)
+    except (ValueError, SyntaxError, IndexError) as e:
+        print(f"Error extracting or evaluating the list: {e}")
+
+    return []
 
 def process_gpt_responses(response_text):
     """
@@ -135,6 +173,7 @@ def process_video_frames(video_frames):
     Process the structured data from video frames into a list of events.
     """
     events = []
+    video_frames = extract_list_from_string(video_frames)
 
     for frame in video_frames:
         # Directly extract data from the dictionary
