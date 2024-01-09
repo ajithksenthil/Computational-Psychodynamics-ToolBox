@@ -10,7 +10,7 @@ import requests
 import ast
 import re
 
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = "your open ai key"
 client = OpenAI(api_key = OPENAI_API_KEY)
 # OpenAI.api_key = os.getenv('OPENAI_API_KEY')
 def extract_frames(video_path, interval=1):
