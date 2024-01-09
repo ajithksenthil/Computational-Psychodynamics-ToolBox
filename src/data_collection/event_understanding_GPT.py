@@ -10,7 +10,7 @@ import requests
 import ast
 import re
 
-OPENAI_API_KEY = "your open ai key"
+OPENAI_API_KEY = "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"
 client = OpenAI(api_key = OPENAI_API_KEY)
 # OpenAI.api_key = os.getenv('OPENAI_API_KEY')
 def extract_frames(video_path, interval=1):
@@ -140,7 +140,7 @@ def gpt_parse_events(descriptions):
 
     return []
 
-def extract_list_from_string(description):
+#def extract_list_from_string(description):
     """
     Extracts the Python list of dictionaries from the string.
     Assumes the list is the last part of the string.
@@ -154,6 +154,28 @@ def extract_list_from_string(description):
         list_str = description[start_index:end_index]
         return ast.literal_eval(list_str)
     except (ValueError, SyntaxError, IndexError) as e:
+        print(f"Error extracting or evaluating the list: {e}")
+
+    return []
+
+def extract_list_from_string(description):
+    """
+    Extracts all complete dictionaries from a string that resembles a Python list of dictionaries.
+    Handles incomplete final dictionary entries.
+    """
+    try:
+        # Adjusted regex pattern to match complete dictionary entries
+        pattern = r"\{'[^']+'[^{}]+\}"
+        
+        # Find all complete dictionaries using regex
+        matches = re.findall(pattern, description, re.DOTALL)
+        if matches:
+            # Construct the list string with the matched dictionaries
+            dict_list = [ast.literal_eval(match) for match in matches]
+            return dict_list
+        else:
+            print("No complete dictionaries found in the string.")
+    except (ValueError, SyntaxError) as e:
         print(f"Error extracting or evaluating the list: {e}")
 
     return []
@@ -174,7 +196,7 @@ def process_video_frames(video_frames):
     """
     events = []
     video_frames = extract_list_from_string(video_frames)
-
+    print("video frames after extraction", video_frames)
     for frame in video_frames:
         # Directly extract data from the dictionary
         subject = frame.get("subject", "")
@@ -215,8 +237,9 @@ def append_timestamps(events, interval):
     return timestamped_events
 
 def main():
-    print("file exists?", os.path.exists('../../data/bison.mp4'))
+    
     video_path = '../../data/bison.mp4'
+    print("file exists?", os.path.exists(video_path))
     interval = 1  # Interval in seconds for frame extraction
 
     frames = extract_frames(video_path, interval)
@@ -226,16 +249,9 @@ def main():
     print("description type", type(descriptions))
     processed_events = process_video_frames(descriptions)
     print("processed_events", processed_events)
-    # batch_size = 10 
-    # events = gpt_parse_events_batch(descriptions, batch_size)
-    # print("events", events)
     timestamped_events = append_timestamps(processed_events, interval)
     print("timestamped_events", timestamped_events)
-    print("descriptions", descriptions)
-    # [Save or process the timestamped events as needed]
-    # ...
-    # Assuming `client` is an initialized OpenAI client and `frames` is a list of base64-encoded frames
-
+   
 
 if __name__ == "__main__":
     main()
