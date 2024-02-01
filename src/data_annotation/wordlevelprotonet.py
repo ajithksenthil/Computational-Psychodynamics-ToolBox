@@ -37,6 +37,32 @@ class ProtoNet(nn.Module):
         # Calculate Euclidean distance between transformed x and the transformed prototypes
         dists = torch.cdist(transformed_x, transformed_prototypes)
         return dists
+    
+
+# class ProtoNet(nn.Module):
+#     def __init__(self, input_size, hidden_size, dropout_rate=0.5):
+#         super(ProtoNet, self).__init__()
+#         # Define a more complex learnable transformation
+#         self.transform = nn.Sequential(
+#             nn.Linear(input_size, hidden_size),
+#             nn.ReLU(),
+#             nn.Dropout(dropout_rate),  # Add dropout after the activation
+#             nn.Linear(hidden_size, hidden_size),  # Additional linear layer
+#             nn.ReLU()  # Activation function for the additional layer
+#             # Can add more layers or dropout as needed
+#         )
+
+#     def forward(self, x, prototypes):
+#         # Apply the transformation to both x and prototypes
+#         transformed_x = self.transform(x)
+#         # Transform prototypes using a loop or another method that ensures
+#         # each prototype is individually processed by the transform
+#         transformed_prototypes = torch.stack([self.transform(proto.unsqueeze(0)).squeeze(0) for proto in prototypes])
+        
+#         # Calculate Euclidean distance between transformed x and the transformed prototypes
+#         dists = torch.cdist(transformed_x, transformed_prototypes)
+#         return dists
+
 
 def compute_prototypes(support_set):
     """
@@ -152,7 +178,7 @@ word_vectors = {'B': B_vectors, 'C': C_vectors, 'P': P_vectors, 'S': S_vectors}
 n_classes = len(word_vectors)
 n_support = 5  # Number of examples per class in support set
 n_query = 5    # Number of examples per class in query set
-num_episodes = 5
+num_episodes = 15
 
 
 # Assuming you have validation data prepared similarly to training data
