@@ -72,8 +72,52 @@ def get_vectors(word_list, model):
             continue
     return vectors
 
+def prepare_query_samples_and_labels(query_set, prototypes=None):
+    query_samples = []
+    query_labels = []
+    label_to_index = {label: idx for idx, label in enumerate(query_set.keys())}
+    
+    for label, vectors in query_set.items():
+        query_samples.extend(vectors)
+        query_labels.extend([label_to_index[label]] * len(vectors))
+    
+    query_samples_tensor = torch.stack(query_samples)
+    query_labels_tensor = torch.tensor(query_labels, dtype=torch.long)
+    
+    # If prototypes are used for something specific here, add that logic
+    
+    return query_samples_tensor, query_labels_tensor
 
+def validate_network(proto_net, optimizer, word_tensors_val, n_support_val, n_query_val):
+    proto_net.eval()  # Set the network to evaluation mode
+    val_loss = 0.0
+    val_accuracy = 0.0
+    total_queries = 0
+    
+    # Create a validation episode
+    support_set_val, query_set_val = create_episode(word_tensors_val, n_support_val, n_query_val)
+    
+    # Compute prototypes for the validation support set
+    prototypes_val = compute_prototypes(support_set_val)
+    prototype_tensor_val = torch.stack(list(prototypes_val.values()))
 
+    # Prepare query samples and labels for validation
+    query_samples_val, query_labels_val = prepare_query_samples_and_labels(query_set_val, prototypes_val)
+
+    # Forward pass for validation
+    with torch.no_grad():
+        dists_val = proto_net(query_samples_val, prototype_tensor_val)
+        val_loss = F.cross_entropy(-dists_val, query_labels_val)
+
+        # Calculate accuracy
+        _, predictions = torch.min(dists_val, 1)
+        correct = (predictions == query_labels_val).sum().item()
+        total_queries += query_labels_val.size(0)
+        val_accuracy = correct / total_queries
+
+    print(f"Validation Loss: {val_loss.item()}, Validation Accuracy: {val_accuracy * 100:.2f}%")
+    proto_net.train()  # Set the model back to training mode
+    return val_loss, val_accuracy
 
 
 
@@ -116,8 +160,10 @@ val_B_vectors = B_vectors
 val_C_vectors = C_vectors
 val_P_vectors = P_vectors
 val_S_vectors = S_vectors
-val_word_vectors = {'B': val_B_vectors, 'C': val_C_vectors, 'P': val_P_vectors, 'S': val_S_vectors}
-val_word_tensors = {label: torch.tensor(vectors, dtype=torch.float32) for label, vectors in val_word_vectors.items()}
+
+# Assuming you have separate validation data prepared similarly for BC and PS
+val_word_tensors_BC = {'B': torch.tensor(val_B_vectors, dtype=torch.float32), 'C': torch.tensor(val_C_vectors, dtype=torch.float32)}
+val_word_tensors_PS = {'P': torch.tensor(val_P_vectors, dtype=torch.float32), 'S': torch.tensor(val_S_vectors, dtype=torch.float32)}
 
 # Define the number of support and query samples for validation
 n_support_val = 5
@@ -133,93 +179,101 @@ input_size = 300
 hidden_size = 256
 
 # Initialize ProtoNet
-model = ProtoNet(input_size, hidden_size)
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+# model = ProtoNet(input_size, hidden_size)
 
-# Training loop
+# Initialize two ProtoNets: one for B vs. C, and one for P vs. S
+proto_net_BC = ProtoNet(input_size=embedding_size, hidden_size=256)
+proto_net_PS = ProtoNet(input_size=embedding_size, hidden_size=256)
+
+optimizer_BC = optim.Adam(proto_net_BC.parameters(), lr=0.001)
+optimizer_PS = optim.Adam(proto_net_PS.parameters(), lr=0.001)
+
+
+
 for episode in range(num_episodes):
-    support_set, query_set = create_episode(word_tensors, n_support, n_query)
+    # Split word_tensors for BC and PS networks
+    word_tensors_BC = {'B': torch.tensor(B_vectors, dtype=torch.float32), 'C': torch.tensor(C_vectors, dtype=torch.float32)}
+    word_tensors_PS = {'P': torch.tensor(P_vectors, dtype=torch.float32), 'S': torch.tensor(S_vectors, dtype=torch.float32)}
 
-    prototypes = compute_prototypes(support_set)
-    prototype_tensor = torch.stack(list(prototypes.values()))
+    # Create episodes for BC and PS networks
+    support_set_BC, query_set_BC = create_episode(word_tensors_BC, n_support, n_query)
+    support_set_PS, query_set_PS = create_episode(word_tensors_PS, n_support, n_query)
 
-    # Prepare query samples and labels for classification
-    query_samples, query_labels = [], []
-    for label, vectors in query_set.items():
-        query_samples.extend(vectors)
-        query_labels.extend([label] * len(vectors))
-    query_samples = torch.stack(query_samples)
-    query_labels = torch.tensor([list(prototypes.keys()).index(label) for label in query_labels], dtype=torch.long)
+    # Compute prototypes for BC and PS networks
+    prototypes_BC = compute_prototypes(support_set_BC)
+    prototypes_PS = compute_prototypes(support_set_PS)
 
-    # Forward pass and compute loss
-    dists = model(query_samples, prototype_tensor)
-    loss = F.cross_entropy(-dists, query_labels)
+    prototype_tensor_BC = torch.stack(list(prototypes_BC.values()))
+    prototype_tensor_PS = torch.stack(list(prototypes_PS.values()))
 
-    # Backward and optimize
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+    # Prepare query samples and labels for BC classification
+    query_samples_BC, query_labels_BC = prepare_query_samples_and_labels(query_set_BC, prototypes_BC)
+    query_samples_PS, query_labels_PS = prepare_query_samples_and_labels(query_set_PS, prototypes_PS)
 
-    print(f"Episode {episode + 1}, Loss: {loss.item()}")
+    # Forward pass and compute loss for BC network
+    dists_BC = proto_net_BC(query_samples_BC, prototype_tensor_BC)
+    loss_BC = F.cross_entropy(-dists_BC, query_labels_BC)
 
-    # Validation phase
-    model.eval()  # Set the model to evaluation mode
-    with torch.no_grad():
-        val_support_set, val_query_set = create_episode(val_word_tensors, n_support_val, n_query_val)
-        val_prototypes = compute_prototypes(val_support_set)
-        val_prototype_tensor = torch.stack(list(val_prototypes.values()))
+    # Backward and optimize for BC network
+    optimizer_BC.zero_grad()
+    loss_BC.backward()
+    optimizer_BC.step()
 
-        # Prepare validation query samples and labels
-        val_query_samples, val_query_labels = [], []
-        for label, vectors in val_query_set.items():
-            val_query_samples.extend(vectors)
-            val_query_labels.extend([label] * len(vectors))
-        val_query_samples = torch.stack(val_query_samples)
-        val_query_labels = torch.tensor([list(val_prototypes.keys()).index(label) for label in val_query_labels], dtype=torch.long)
+    # Forward pass and compute loss for PS network
+    dists_PS = proto_net_PS(query_samples_PS, prototype_tensor_PS)
+    loss_PS = F.cross_entropy(-dists_PS, query_labels_PS)
 
-        # Forward pass for validation
-        val_dists = model(val_query_samples, val_prototype_tensor)
-        val_loss = F.cross_entropy(-val_dists, val_query_labels)
+    # Backward and optimize for PS network
+    optimizer_PS.zero_grad()
+    loss_PS.backward()
+    optimizer_PS.step()
 
-        print(f"Validation Loss in Episode {episode + 1}: {val_loss.item()}")
+    print(f"Episode {episode + 1}, Loss for BC Network: {loss_BC.item()}, Loss for PS Network: {loss_PS.item()}")
 
-    model.train()  # Set the model back to training mode
+    # Validation for BC network
+    print("Validating BC Network:")
+    validate_network(proto_net_BC, optimizer_BC, val_word_tensors_BC, n_support_val, n_query_val)
+
+    # Validation for PS network
+    print("Validating PS Network:")
+    validate_network(proto_net_PS, optimizer_PS, val_word_tensors_PS, n_support_val, n_query_val)
 
 
 
-def classify_new_words(new_words, word2vec_model, prototype_tensor):
-    """
-    Classify new words using the trained Prototypical Networks.
 
-    :param new_words: List of new words to classify.
-    :param word2vec_model: Pre-trained Word2Vec model used for embeddings.
-    :param prototype_tensor: Tensor of learned prototypes for each class.
-    :return: Predicted class labels for the new words.
-    """
-    # Correctly accessing word vectors from the KeyedVectors object
+def classify_new_words(new_words, word2vec_model, proto_net_BC, proto_net_PS, prototype_tensor_BC, prototype_tensor_PS):
     new_word_embeddings = [word2vec_model[word.lower()] for word in new_words if word.lower() in word2vec_model]
     if not new_word_embeddings:
         print("None of the new words were found in the model's vocabulary.")
         return []
     new_word_embeddings_tensor = torch.tensor(new_word_embeddings, dtype=torch.float32)
     
-    # Compute distances to prototypes
-    dists = model(new_word_embeddings_tensor, prototype_tensor)
+    # Compute distances to prototypes for both networks
+    dists_BC = proto_net_BC(new_word_embeddings_tensor, prototype_tensor_BC)
+    predicted_classes_BC = torch.argmin(dists_BC, dim=1)
     
-    # Classify based on the shortest distance to prototypes
-    predicted_classes = torch.argmin(dists, dim=1)
+    dists_PS = proto_net_PS(new_word_embeddings_tensor, prototype_tensor_PS)
+    predicted_classes_PS = torch.argmin(dists_PS, dim=1)
     
-    return predicted_classes.numpy()
+    # Combine the outputs from both networks to form the final classification
+    # This step requires a custom logic based on how you decide to combine the binary classifications
+    # For simplification, let's just return the outputs for now
+    return predicted_classes_BC.numpy(), predicted_classes_PS.numpy()
 
 
 
 
-
-def test(): 
+def test():
     # Example usage
     new_words = ['jump', 'mystify', 'look', 'consider', 'instruct', 'plan']
-    predicted_labels = classify_new_words(new_words, word2vec_model, prototype_tensor)
-    print(predicted_labels)
-
+    
+    # Assuming prototype_tensor_BC and prototype_tensor_PS are already defined
+    predicted_labels_BC, predicted_labels_PS = classify_new_words(new_words, word2vec_model, proto_net_BC, proto_net_PS, prototype_tensor_BC, prototype_tensor_PS)
+    
+    # Assuming you have a mechanism to map the numerical predictions back to class labels
+    # For simplification, the following just prints the predictions
+    print("Predicted labels for B vs. C:", predicted_labels_BC)
+    print("Predicted labels for P vs. S:", predicted_labels_PS)
+    # You would include here the logic to combine these predictions into your final BP, BS, CP, CS classifications
 
 test()
