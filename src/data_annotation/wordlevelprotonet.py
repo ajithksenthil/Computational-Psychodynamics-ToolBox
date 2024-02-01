@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 import torch.optim as optim
 import torch.nn.functional as F
@@ -9,15 +10,32 @@ from sklearn.metrics.pairwise import euclidean_distances
 import gensim.downloader as api
 from gensim.models.word2vec import Word2Vec
 
+# Load a pre-trained Word2Vec model
+word2vec_model = api.load('word2vec-google-news-300')
+
+# Get the embedding size
+embedding_size = word2vec_model.vector_size
+print("Embedding size:", embedding_size)
+
 
 
 class ProtoNet(nn.Module):
-    def __init__(self):
+    def __init__(self, input_size, hidden_size):
         super(ProtoNet, self).__init__()
+        # Define a learnable transformation
+        self.transform = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU()
+        )
 
     def forward(self, x, prototypes):
-        # Calculate Euclidean distance between each x and the prototypes
-        dists = torch.cdist(x, prototypes)
+        # Apply the transformation to both x and prototypes
+        transformed_x = self.transform(x)
+        transformed_prototypes = [self.transform(proto) for proto in prototypes]
+        transformed_prototypes = torch.stack(transformed_prototypes)
+        
+        # Calculate Euclidean distance between transformed x and the transformed prototypes
+        dists = torch.cdist(transformed_x, transformed_prototypes)
         return dists
 
 def compute_prototypes(support_set):
@@ -42,12 +60,20 @@ def create_episode(word_vectors, n_support, n_query):
         query_set[label] = vectors[n_support:n_support + n_query]
     return support_set, query_set
 
-# Download the "text8" dataset
-dataset = api.load("text8")
+# Function to get vectors for a list of words using a pre-trained model
+def get_vectors(word_list, model):
+    vectors = []
+    for word in word_list:
+        try:
+            vector = model[word]
+            vectors.append(vector)
+        except KeyError:
+            # Word is not in the model's vocabulary
+            continue
+    return vectors
 
-# Extract the data and create a word2vec model
 
-model = Word2Vec(dataset)
+
 
 
 
@@ -70,43 +96,11 @@ c_word_cloud_lower = [word.lower() for word in C_word_cloud]
 p_word_cloud_lower = [word.lower() for word in P_word_cloud]
 s_word_cloud_lower = [word.lower() for word in S_word_cloud]
 
-B_vectors = []
-for word in b_word_cloud_lower:
-    try:
-        vector = model.wv[word]
-    except KeyError:
-        # Word is not in the vocabulary, skip it
-        continue
-    B_vectors.append(vector)
-
-C_vectors = []
-for word in c_word_cloud_lower:
-    try:
-        vector = model.wv[word]
-    except KeyError:
-        # Word is not in the vocabulary, skip it
-        continue
-    C_vectors.append(vector)
-
-
-P_vectors = []
-for word in p_word_cloud_lower:
-    try:
-        vector = model.wv[word]
-    except KeyError:
-        # Word is not in the vocabulary, skip it
-        continue
-    P_vectors.append(vector)
-
-
-S_vectors = []
-for word in s_word_cloud_lower:
-    try:
-        vector = model.wv[word]
-    except KeyError:
-        # Word is not in the vocabulary, skip it
-        continue
-    S_vectors.append(vector)
+# Use the function to get vectors for your word clouds
+B_vectors = get_vectors(b_word_cloud_lower, word2vec_model)
+C_vectors = get_vectors(c_word_cloud_lower, word2vec_model)
+P_vectors = get_vectors(p_word_cloud_lower, word2vec_model)
+S_vectors = get_vectors(s_word_cloud_lower, word2vec_model)
 
 
 # training loop 
@@ -132,8 +126,14 @@ n_query_val = 5
 # Convert word vectors to PyTorch tensors
 word_tensors = {label: torch.tensor(vectors, dtype=torch.float32) for label, vectors in word_vectors.items()}
 
+
+# Assuming the Word2Vec embeddings are 300-dimensional
+input_size = 300
+# Choose a hidden size for the transformation
+hidden_size = 256
+
 # Initialize ProtoNet
-model = ProtoNet()
+model = ProtoNet(input_size, hidden_size)
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Training loop
@@ -187,21 +187,24 @@ for episode in range(num_episodes):
 
 
 
-def classify_new_words(model, new_words, word2vec_model, prototypes):
+def classify_new_words(new_words, word2vec_model, prototype_tensor):
     """
     Classify new words using the trained Prototypical Networks.
-    
-    :param model: Trained Prototypical Network model.
+
     :param new_words: List of new words to classify.
     :param word2vec_model: Pre-trained Word2Vec model used for embeddings.
-    :param prototypes: Learned prototypes for each class.
+    :param prototype_tensor: Tensor of learned prototypes for each class.
     :return: Predicted class labels for the new words.
     """
-    new_word_embeddings = [word2vec_model.wv[word.lower()] for word in new_words if word.lower() in word2vec_model.wv]
+    # Correctly accessing word vectors from the KeyedVectors object
+    new_word_embeddings = [word2vec_model[word.lower()] for word in new_words if word.lower() in word2vec_model]
+    if not new_word_embeddings:
+        print("None of the new words were found in the model's vocabulary.")
+        return []
     new_word_embeddings_tensor = torch.tensor(new_word_embeddings, dtype=torch.float32)
     
     # Compute distances to prototypes
-    dists = model(new_word_embeddings_tensor, prototypes)
+    dists = model(new_word_embeddings_tensor, prototype_tensor)
     
     # Classify based on the shortest distance to prototypes
     predicted_classes = torch.argmin(dists, dim=1)
@@ -209,7 +212,14 @@ def classify_new_words(model, new_words, word2vec_model, prototypes):
     return predicted_classes.numpy()
 
 
+
+
+
 def test(): 
     # Example usage
-    new_words = ['Word1', 'Word2', 'Word3']
-    predicted_labels = classify_new_words(model, new_words, model, prototype_tensor)
+    new_words = ['jump', 'mystify', 'look', 'consider', 'instruct', 'plan']
+    predicted_labels = classify_new_words(new_words, word2vec_model, prototype_tensor)
+    print(predicted_labels)
+
+
+test()
