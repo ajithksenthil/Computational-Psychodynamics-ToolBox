@@ -23,13 +23,31 @@ model = AutoModel.from_pretrained('bert-base-uncased')
 
 
 class ProtoNet(nn.Module):
-    def __init__(self):
+    def __init__(self, input_size, hidden_size, dropout_rate=0.5):
         super(ProtoNet, self).__init__()
+        # Define a learnable transformation
+        # This can be a single layer or a sequence of layers
+        self.transform = nn.Sequential(
+            nn.Linear(input_size, hidden_size),  # First transformation layer
+            nn.ReLU(),  # Non-linearity
+            nn.Dropout(dropout_rate),  # Dropout for regularization
+            # Add more layers as needed, depending on the complexity of your task
+            nn.Linear(hidden_size, hidden_size // 2),  # Additional transformation layer
+            nn.ReLU(),  # Non-linearity
+        )
 
     def forward(self, x, prototypes):
-        # Calculate Euclidean distance between each x and the prototypes
-        dists = torch.cdist(x, prototypes)
+        # Apply the transformation to the input embeddings x
+        transformed_x = self.transform(x)
+
+        # Apply the same transformation to each prototype
+        # Ensure that prototypes are properly unsqueezed if they lack a batch dimension
+        transformed_prototypes = torch.stack([self.transform(proto.unsqueeze(0)).squeeze(0) for proto in prototypes])
+        
+        # Calculate Euclidean distance between the transformed x and the transformed prototypes
+        dists = torch.cdist(transformed_x, transformed_prototypes)
         return dists
+
 
 def compute_prototypes(support_set):
     """
@@ -40,18 +58,24 @@ def compute_prototypes(support_set):
         prototypes[label] = torch.mean(vectors, dim=0)
     return prototypes
 
-def create_episode(word_vectors, n_support, n_query):
+def create_episode(event_data, n_support, n_query):
     """
-    Create a support and query set for an episode.
+    Create a support and query set for an episode from event embeddings or representations.
+    
+    :param event_data: Dictionary of class labels to lists of event embeddings.
+    :param n_support: Number of examples per class in the support set.
+    :param n_query: Number of examples per class in the query set.
+    :return: Two dictionaries representing the support and query sets.
     """
     support_set = {}
     query_set = {}
-    for label, vectors in word_vectors.items():
-        # Randomly sample words for support and query set
-        random.shuffle(vectors)
-        support_set[label] = vectors[:n_support]
-        query_set[label] = vectors[n_support:n_support + n_query]
+    for label, embeddings in event_data.items():
+        # Ensure embeddings are shuffled before sampling
+        random.shuffle(embeddings)
+        support_set[label] = embeddings[:n_support]
+        query_set[label] = embeddings[n_support:n_support + n_query]
     return support_set, query_set
+
 
 
 
@@ -84,6 +108,103 @@ def create_event_representations(word_clouds):
             embedding = get_contextual_embedding(event_sentence)
             events.append((embedding, label))
     return events
+
+def prepare_query_samples_and_labels(query_set):
+    """
+    Prepare query samples and labels for classification from the query set.
+    
+    :param query_set: Dictionary of class labels to lists of tuples (embedding, label).
+    :return: A tuple of (query_samples_tensor, query_labels_tensor).
+    """
+    query_samples = []
+    query_labels = []
+    label_to_index = {label: idx for idx, label in enumerate(query_set.keys())}  # Map labels to indices
+    
+    for label, events in query_set.items():
+        for event in events:
+            query_samples.append(event[0])  # Assuming event[0] is the embedding
+            query_labels.append(label_to_index[label])  # Convert label to index
+    
+    # Convert lists to tensors
+    query_samples_tensor = torch.stack(query_samples)
+    query_labels_tensor = torch.tensor(query_labels, dtype=torch.long)
+    
+    return query_samples_tensor, query_labels_tensor
+
+
+def train_proto_net(proto_net, optimizer, query_samples, query_labels, prototype_tensor):
+    """
+    Train the Prototypical Network for one episode.
+    
+    :param proto_net: The Prototypical Network model to be trained.
+    :param optimizer: The optimizer for updating the model's parameters.
+    :param query_samples: Tensor of query samples for the current episode.
+    :param query_labels: Tensor of labels for the query samples.
+    :param prototype_tensor: Tensor of prototypes for the current episode.
+    """
+    proto_net.train()  # Ensure the network is in training mode
+    
+    # Forward pass: Compute the distances from query samples to prototypes
+    dists = proto_net(query_samples, prototype_tensor)
+    
+    # Compute the loss: Negative distance because we're using the CrossEntropy loss,
+    # which expects logits (higher values for more likely classes). Since distance implies
+    # the opposite (lower is better), we negate the distances.
+    loss = F.cross_entropy(-dists, query_labels)
+    
+    # Backward pass: compute gradient of the loss with respect to model parameters
+    optimizer.zero_grad()  # Reset gradients; they accumulate by default
+    loss.backward()
+    
+    # Perform a single optimization step (parameter update)
+    optimizer.step()
+
+    # Optionally return the loss for logging or any other monitoring
+    return loss.item()
+
+
+def validate_proto_net(proto_net, val_events, task_label):
+    """
+    Validate the Prototypical Network on a validation dataset.
+    
+    :param proto_net: The Prototypical Network model to be validated.
+    :param val_events: The validation dataset.
+    :param task_label: A string indicating the task ('BC' or 'PS') to filter the relevant events.
+    """
+    proto_net.eval()  # Set the network to evaluation mode
+    total_loss = 0
+    total_correct = 0
+    total_samples = 0
+    
+    # Filter validation events for the current task
+    task_events = {k: v for k, v in val_events.items() if k in task_label}
+    
+    # Prepare support and query sets for validation
+    # Assuming create_episode and compute_prototypes are defined similarly to the training phase
+    support_set, query_set = create_episode(task_events, n_support_val, n_query_val)
+    prototypes = compute_prototypes(support_set)
+    prototype_tensor = torch.stack(list(prototypes.values()))
+    
+    query_samples, query_labels = prepare_query_samples_and_labels(query_set)
+    
+    with torch.no_grad():
+        # Forward pass to compute distances
+        dists = proto_net(query_samples, prototype_tensor)
+        
+        # Compute the loss
+        loss = F.cross_entropy(-dists, query_labels)
+        total_loss += loss.item() * query_samples.size(0)  # Multiply by batch size for accurate mean calculation
+        
+        # Compute accuracy
+        _, predicted = torch.min(dists, 1)
+        total_correct += (predicted == query_labels).sum().item()
+        total_samples += query_labels.size(0)
+    
+    avg_loss = total_loss / total_samples
+    accuracy = total_correct / total_samples * 100
+    
+    print(f"Validation Results - Task {task_label}: Average Loss: {avg_loss:.4f}, Accuracy: {accuracy:.2f}%")
+
 
 # Set up word clouds
 B_word_cloud = ["Communicate", "Organize", "Teach", "Control", "Direct", "Start", "Brag", "Motivate", "Inspire",
@@ -127,6 +248,7 @@ n_query = 5
 # Initialize ProtoNet
 input_size = 768  # For bert-base-uncased
 hidden_size = 512  # Example hidden size, adjust as needed
+dropout_rate = 0.5  # Common starting point, adjust as needed
 
 proto_net_BC = ProtoNet(input_size, hidden_size, dropout_rate=0.5)
 proto_net_PS = ProtoNet(input_size, hidden_size, dropout_rate=0.5)
@@ -136,43 +258,31 @@ optimizer_PS = optim.Adam(proto_net_PS.parameters(), lr=0.001)
 
 # Event-Level Training Loop
 for episode in range(num_episodes):
-    support_set, query_set = create_episode(event_representations, n_support, n_query)
+    # Assuming event_representations is structured similarly to word_vectors
+    # and split into training (train_events) and validation (val_events) datasets
+    
+    # Create episodes for BC and PS training
+    support_set_BC, query_set_BC = create_episode({key: val for key, val in train_events.items() if key in ['B', 'C']}, n_support, n_query)
+    support_set_PS, query_set_PS = create_episode({key: val for key, val in train_events.items() if key in ['P', 'S']}, n_support, n_query)
+    
+    # Compute prototypes for BC and PS
+    prototypes_BC = compute_prototypes(support_set_BC)
+    prototypes_PS = compute_prototypes(support_set_PS)
+    
+    prototype_tensor_BC = torch.stack(list(prototypes_BC.values()))
+    prototype_tensor_PS = torch.stack(list(prototypes_PS.values()))
 
-    # Computing prototypes
-    prototypes = {}
-    for label, events in support_set.items():
-        embeddings = torch.stack([event[0] for event in events])
-        prototypes[label] = torch.mean(embeddings, dim=0)
-    prototype_tensor = torch.stack(list(prototypes.values()))
+    # Training for BC
+    query_samples_BC, query_labels_BC = prepare_query_samples_and_labels(query_set_BC)
+    train_proto_net(proto_net_BC, optimizer_BC, query_samples_BC, query_labels_BC, prototype_tensor_BC)
+    
+    # Training for PS
+    query_samples_PS, query_labels_PS = prepare_query_samples_and_labels(query_set_PS)
+    train_proto_net(proto_net_PS, optimizer_PS, query_samples_PS, query_labels_PS, prototype_tensor_PS)
 
-    # Preparing query samples and labels
-    query_samples = torch.stack([event[0] for event in query_set])
-    query_labels = torch.tensor([list(prototypes.keys()).index(event[1]) for event in query_set])
-
-    # Forward pass and compute loss
-    dists = model(query_samples, prototype_tensor)
-    loss = F.cross_entropy(-dists, query_labels)
-
-    # Backward pass and optimization
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-
-    print(f"Episode {episode + 1}, Loss: {loss.item()}")
-
-    # Validation step
-    model.eval()
-    with torch.no_grad():
-        val_support_set, val_query_set = create_episode(val_events, n_support_val, n_query_val)
-        val_prototypes = compute_prototypes(val_support_set)
-        val_prototype_tensor = torch.stack(list(val_prototypes.values()))
-
-        val_dists = model(torch.stack([x[0] for x in val_query_set]), val_prototype_tensor)
-        val_labels = torch.tensor([x[1] for x in val_query_set])
-        val_loss = F.cross_entropy(-val_dists, val_labels)
-        print(f"Validation Loss in Episode {episode + 1}: {val_loss.item()}")
-
-    model.train()
+    # Validation for BC and PS
+    validate_proto_net(proto_net_BC, val_events, 'BC')
+    validate_proto_net(proto_net_PS, val_events, 'PS')
 
 
 
