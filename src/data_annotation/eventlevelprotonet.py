@@ -125,8 +125,15 @@ n_support = 5
 n_query = 5
 
 # Initialize ProtoNet
-model = ProtoNet()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+input_size = 768  # For bert-base-uncased
+hidden_size = 512  # Example hidden size, adjust as needed
+
+proto_net_BC = ProtoNet(input_size, hidden_size, dropout_rate=0.5)
+proto_net_PS = ProtoNet(input_size, hidden_size, dropout_rate=0.5)
+
+optimizer_BC = optim.Adam(proto_net_BC.parameters(), lr=0.001)
+optimizer_PS = optim.Adam(proto_net_PS.parameters(), lr=0.001)
+
 # Event-Level Training Loop
 for episode in range(num_episodes):
     support_set, query_set = create_episode(event_representations, n_support, n_query)
@@ -170,29 +177,25 @@ for episode in range(num_episodes):
 
 
 
-def classify_new_words(model, new_words, word2vec_model, prototypes):
-    """
-    Classify new words using the trained Prototypical Networks.
+def classify_new_events(new_events, proto_net_BC, proto_net_PS, prototype_tensor_BC, prototype_tensor_PS):
+    new_event_embeddings = [get_contextual_embedding(event) for event in new_events]
+    new_event_embeddings_tensor = torch.stack(new_event_embeddings)
     
-    :param model: Trained Prototypical Network model.
-    :param new_words: List of new words to classify.
-    :param word2vec_model: Pre-trained Word2Vec model used for embeddings.
-    :param prototypes: Learned prototypes for each class.
-    :return: Predicted class labels for the new words.
-    """
-    new_word_embeddings = [word2vec_model.wv[word.lower()] for word in new_words if word.lower() in word2vec_model.wv]
-    new_word_embeddings_tensor = torch.tensor(new_word_embeddings, dtype=torch.float32)
+    dists_BC = proto_net_BC(new_event_embeddings_tensor, prototype_tensor_BC)
+    dists_PS = proto_net_PS(new_event_embeddings_tensor, prototype_tensor_PS)
     
-    # Compute distances to prototypes
-    dists = model(new_word_embeddings_tensor, prototypes)
+    predicted_classes_BC = torch.argmin(dists_BC, dim=1)
+    predicted_classes_PS = torch.argmin(dists_PS, dim=1)
     
-    # Classify based on the shortest distance to prototypes
-    predicted_classes = torch.argmin(dists, dim=1)
+    # Combine BC and PS predictions here
+    # This requires custom logic based on your classification scheme
     
-    return predicted_classes.numpy()
-
+    return predicted_classes_BC.numpy(), predicted_classes_PS.numpy()
 
 def test(): 
-    # Example usage
-    new_words = ['Word1', 'Word2', 'Word3']
-    predicted_labels = classify_new_words(model, new_words, model, prototype_tensor)
+    # Adjust this function to create event sentences and classify them using the updated `classify_new_events`
+    new_events = ['Event sentence 1', 'Event sentence 2', 'Event sentence 3']
+    predicted_labels_BC, predicted_labels_PS = classify_new_events(new_events, proto_net_BC, proto_net_PS, prototype_tensor_BC, prototype_tensor_PS)
+    print("Predicted labels for BC:", predicted_labels_BC)
+    print("Predicted labels for PS:", predicted_labels_PS)
+
